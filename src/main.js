@@ -127,6 +127,7 @@ let river = null;
 let flatWater = null;
 let bridge = null;
 let grass = null;
+let scatterGroup = null;
 let photo = null;
 let photoBusy = false;
 let mode = 'orbit'; // 'orbit' | 'tour' | 'pov'
@@ -424,12 +425,12 @@ async function init() {
     if (flatWater) scene.add(flatWater.mesh);
   }
 
-  const scatter = buildScatter(terrain, route.curve, {
+  scatterGroup = buildScatter(terrain, route.curve, {
     treeLine: CFG.treeLine, rockBand: CFG.rockBand,
     waterPolys: [...(CFG.rivers ? CFG.rivers.polys : []), ...(CFG.lakes || []).map((l) => l.pts)]
   });
-  scene.add(scatter.group);
-  console.log('vegetação:', scatter.counts);
+  scene.add(scatterGroup.group);
+  console.log('vegetação:', scatterGroup.counts);
 
   grass = buildGrass(terrain);
   scene.add(grass.mesh);
@@ -495,12 +496,20 @@ async function togglePhoto() {
       };
     }
     if (lakes) lakes.setPhotoMode(true);
-    await photo.enter();
+    try {
+      await photo.enter();
+    } catch (err) {
+      // cena demasiado pesada (ex.: milhões de triângulos de vegetação):
+      // repetir sem árvores/rochas
+      console.warn('modo foto: a repetir sem vegetação —', err);
+      photoStatus.textContent = 'cena pesada — a repetir sem vegetação…';
+      await photo.enter(scatterGroup ? [scatterGroup.group] : []);
+    }
     photoStatus.textContent = 'a convergir…';
   } catch (err) {
     console.error('modo foto falhou:', err);
-    photoStatus.textContent = 'o modo foto não é suportado neste dispositivo';
-    setTimeout(() => photoOverlay.classList.remove('open'), 2500);
+    photoStatus.textContent = `modo foto falhou: ${err && err.message ? err.message.slice(0, 120) : err}`;
+    setTimeout(() => photoOverlay.classList.remove('open'), 6000);
     photo = null;
   }
   photoBusy = false;

@@ -58,9 +58,10 @@ export async function createPhotoMode({ renderer, scene, camera, sunDir, hideDur
   let active = false;
   const equirectSky = makeEquirectSky(sunDir);
 
-  async function enter() {
-    const prevVisibility = hideDuringPhoto.map((o) => [o, o.visible]);
-    hideDuringPhoto.forEach((o) => (o.visible = false));
+  async function enter(extraHide = []) {
+    const toHide = [...hideDuringPhoto, ...extraHide];
+    const prevVisibility = toHide.map((o) => [o, o.visible]);
+    toHide.forEach((o) => (o.visible = false));
     const prevBackground = scene.background;
     const prevEnvironment = scene.environment;
     scene.background = equirectSky;
@@ -69,9 +70,14 @@ export async function createPhotoMode({ renderer, scene, camera, sunDir, hideDur
     try {
       // construir BVH da cena (pode demorar — cena com milhões de triângulos)
       if (ParallelMeshBVHWorker) {
-        await tracer.setSceneAsync(scene, camera, {
-          onProgress: (p) => onBuildProgress && onBuildProgress(p)
-        });
+        try {
+          await tracer.setSceneAsync(scene, camera, {
+            onProgress: (p) => onBuildProgress && onBuildProgress(p)
+          });
+        } catch (err) {
+          console.warn('BVH em worker falhou, a tentar síncrono:', err);
+          tracer.setScene(scene, camera);
+        }
       } else {
         tracer.setScene(scene, camera); // bloqueia a UI durante a construção
       }
