@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // Vegetação e rochas procedurais colocadas com regras reais:
 // - árvores (larícios/abetos) abaixo da linha de árvore (~2150 m) em zonas
@@ -59,18 +60,28 @@ function mergeGeoms(geoms) {
   return out;
 }
 
-export function buildScatter(terrain) {
+export function buildScatter(terrain, routeCurve) {
+  // manter o trilho limpo: sem rochas/árvores em cima do caminho
+  const routePts = [];
+  if (routeCurve) for (let i = 0; i <= 220; i++) routePts.push(routeCurve.getPoint(i / 220));
+  function nearRoute(x, z, r2) {
+    for (const p of routePts) {
+      const dx = p.x - x, dz = p.z - z;
+      if (dx * dx + dz * dz < r2) return true;
+    }
+    return false;
+  }
   const rnd = mulberry32(19052);
   const { width, depth } = terrain.size;
   const sat = terrain.satSample;
 
-  const TREE_LINE = 2200; // altitude (m) acima da qual não há floresta
+  const TREE_LINE = 2250; // altitude (m) acima da qual não há floresta
   const group = new THREE.Group();
 
   // ---------- candidatos ----------
   const trees = [];
   const rocks = [];
-  const ATTEMPTS = 150000;
+  const ATTEMPTS = 450000;
   for (let i = 0; i < ATTEMPTS; i++) {
     const x = (rnd() - 0.5) * (width - 200);
     const z = (rnd() - 0.5) * (depth - 200);
@@ -78,17 +89,17 @@ export function buildScatter(terrain) {
     const alt = h + terrain.hMin;
     const [r, g, b] = sat(x, z);
 
-    if (alt < TREE_LINE && trees.length < 24000) {
-      // floresta: pixel verde-escuro, declive moderado
-      const greenish = g > r + 5 && g > b + 5 && g < 130;
-      if (greenish && slopeAt(terrain, x, z) < 1.15) {
+    if (alt < TREE_LINE && trees.length < 70000) {
+      // floresta: pixel esverdeado-escuro, declive moderado
+      const greenish = g > r + 3 && g > b + 2 && g < 145;
+      if (greenish && slopeAt(terrain, x, z) < 1.25 && !nearRoute(x, z, 36)) {
         trees.push({ x, z, h, shade: 0.75 + rnd() * 0.5, s: 0.7 + rnd() * 0.9 });
       }
     } else if (alt > 2250 && alt < 2900 && rocks.length < 6000) {
       // rochedos: pixel acinzentado, com alguma probabilidade
       const gray = Math.abs(r - g) < 18 && Math.abs(g - b) < 18 && r > 70 && r < 170;
-      if (gray && rnd() < 0.35 && slopeAt(terrain, x, z) < 1.2) {
-        rocks.push({ x, z, h, tone: 0.6 + rnd() * 0.5, s: 0.5 + rnd() * 2.2, ry: rnd() * Math.PI });
+      if (gray && rnd() < 0.35 && slopeAt(terrain, x, z) < 1.2 && !nearRoute(x, z, 144)) {
+        rocks.push({ x, z, h, tone: 0.6 + rnd() * 0.5, s: 0.4 + rnd() * 1.4, ry: rnd() * Math.PI });
       }
     }
   }
@@ -121,8 +132,9 @@ export function buildScatter(terrain) {
 
   // ---------- rochas ----------
   if (rocks.length) {
-    const rockGeo = new THREE.IcosahedronGeometry(1.4, 1);
-    // deformar levemente para não parecer uma esfera perfeita
+    // IcosahedronGeometry é non-indexed: soldar vértices primeiro, senão a
+    // deformação aleatória rasga as faces (cada cópia desloca-se diferente)
+    const rockGeo = mergeVertices(new THREE.IcosahedronGeometry(1.4, 1));
     const rp = rockGeo.attributes.position;
     const rrnd = mulberry32(7331);
     for (let i = 0; i < rp.count; i++) {

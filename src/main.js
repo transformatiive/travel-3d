@@ -28,6 +28,26 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.getElementById('app').appendChild(renderer.domElement);
 
+// deteção de GPU: garantir que não estamos em renderização por software
+{
+  const gl = renderer.getContext();
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const gpuName = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : '(nome indisponível)';
+  console.log('Renderer gráfico:', gpuName);
+  if (/swiftshader|software|llvmpipe|basic render/i.test(gpuName)) {
+    const warn = document.createElement('div');
+    warn.style.cssText =
+      'position:fixed;top:70px;left:50%;transform:translateX(-50%);z-index:60;' +
+      'background:rgba(180,60,20,0.92);color:#fff;padding:10px 16px;border-radius:10px;' +
+      'font:600 13px system-ui;max-width:90vw;text-align:center';
+    warn.textContent =
+      '⚠ O browser está a renderizar por software (CPU). Ativa a aceleração de hardware ' +
+      'nas definições do browser para usar a placa gráfica.';
+    document.body.appendChild(warn);
+    setTimeout(() => warn.remove(), 12000);
+  }
+}
+
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0xcfe0ee, 6000, 26000);
 
@@ -166,7 +186,13 @@ function updatePOV(dt) {
   }
 
   // >>> câmara acompanha SEMPRE a altitude do chão: nível dos olhos <<<
-  const groundY = terrain.heightAt(pov.pos.x, pov.pos.z);
+  // máximo numa pequena vizinhança para não enterrar a câmara em encostas
+  const h = terrain.heightAt;
+  const groundY = Math.max(
+    h(pov.pos.x, pov.pos.z),
+    h(pov.pos.x - 4, pov.pos.z), h(pov.pos.x + 4, pov.pos.z),
+    h(pov.pos.x, pov.pos.z - 4), h(pov.pos.x, pov.pos.z + 4)
+  );
   const targetY = groundY + EYE_HEIGHT;
   // suavizar ligeiramente para degraus do heightmap não "martelarem" a câmara
   pov.pos.y += (targetY - pov.pos.y) * Math.min(1, dt * 12);
@@ -346,7 +372,7 @@ async function init() {
   lakes = buildLakes(terrain);
   scene.add(lakes.group);
 
-  const scatter = buildScatter(terrain);
+  const scatter = buildScatter(terrain, route.curve);
   scene.add(scatter.group);
   console.log('vegetação:', scatter.counts);
 
@@ -362,7 +388,28 @@ async function init() {
 
   document.getElementById('loading').classList.add('done');
   setMode('orbit');
-  window.__travel3d = { terrain, route }; // handle de debug/testes
+  window.__travel3d = {
+    terrain, route, camera, controls,
+    // câmara livre para capturas (desativa controladores até mudar de modo)
+    setCam(px, py, pz, tx, ty, tz) {
+      mode = 'free';
+      controls.enabled = false;
+      camera.position.set(px, py, pz);
+      camera.lookAt(tx, ty, tz);
+      // visual de rota ao nível do chão + relva, como no POV
+      route.tubeFar.visible = false;
+      route.dots.visible = false;
+      route.tubeNear.visible = true;
+      if (hiker) hiker.visible = false;
+      if (grass) { grass.mesh.visible = true; grass.update(camera.position); }
+    },
+    // altura segura do chão: máximo do terreno numa vizinhança (evita
+    // enterrar a câmara na malha em encostas íngremes)
+    groundY(x, z, r = 8) {
+      const h = terrain.heightAt;
+      return Math.max(h(x, z), h(x - r, z), h(x + r, z), h(x, z - r), h(x, z + r));
+    }
+  };
 }
 
 // ---------- modo foto (path tracing) ----------
@@ -425,12 +472,25 @@ function animate() {
     else if (mode === 'pov') updatePOV(dt);
     else { updateCamAnim(dt); controls.update(); }
     if (hiker && mode !== 'tour') hiker.rotation.y += dt * 0.8;
-    // tamanho aparente das etiquetas ~constante: encolher quando a câmara está perto
+    // etiquetas: tamanho aparente ~constante + declutter (se duas se sobrepõem
+    // no ecrã, a mais próxima da câmara ganha)
     if (markers) {
-      for (const s of markers.children) {
+      const placed = [];
+      const byDist = [...markers.children].sort(
+        (a, b) => camera.position.distanceToSquared(a.position) - camera.position.distanceToSquared(b.position)
+      );
+      const v = new THREE.Vector3();
+      for (const s of byDist) {
         const d = camera.position.distanceTo(s.position);
         const k = Math.min(1, Math.max(0.1, d / 1600));
         s.scale.set(s.userData.baseH * s.userData.aspect * k, s.userData.baseH * k, 1);
+        v.copy(s.position).project(camera);
+        if (v.z > 1) { s.visible = false; continue; } // atrás da câmara
+        const sx = (v.x * 0.5 + 0.5) * window.innerWidth;
+        const sy = (-v.y * 0.5 + 0.5) * window.innerHeight;
+        const clash = placed.some((p) => Math.abs(p.x - sx) < 130 && Math.abs(p.y - sy) < 48);
+        s.visible = !clash;
+        if (!clash) placed.push({ x: sx, y: sy });
       }
     }
     if (lakes) lakes.update(t);

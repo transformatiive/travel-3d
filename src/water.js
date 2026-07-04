@@ -49,8 +49,24 @@ function insidePolygon(x, z, pts) {
   return inside;
 }
 
-// grelha regular sobre a bounding box do polígono; mantém células com o centro
-// dentro do lago. Triangulação trivial e sempre bem orientada (normal +Y).
+// ponto mais próximo no contorno do polígono (para suavizar a margem)
+function nearestOnPolygon(x, z, pts) {
+  let bx = x, bz = z, bd = Infinity;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const ax = pts[j].x, az = pts[j].z, cx = pts[i].x, cz = pts[i].z;
+    const dx = cx - ax, dz = cz - az;
+    const len2 = dx * dx + dz * dz || 1;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / len2));
+    const px = ax + t * dx, pz = az + t * dz;
+    const d = (px - x) * (px - x) + (pz - z) * (pz - z);
+    if (d < bd) { bd = d; bx = px; bz = pz; }
+  }
+  return [bx, bz];
+}
+
+// grelha regular sobre a bounding box do polígono; mantém células que tocam o
+// lago e projeta os vértices exteriores na margem real — contorno suave.
+// Triangulação trivial e sempre bem orientada (normal +Y).
 function clipGridToPolygon(pts, N) {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (const p of pts) {
@@ -81,6 +97,15 @@ function clipGridToPolygon(pts, N) {
     }
   }
   if (!idx.length) return null;
+  // suavizar a margem: vértices fora do polígono deslizam para o contorno real
+  for (let v = 0; v < verts.length; v += 3) {
+    const x = verts[v], z = verts[v + 2];
+    if (!insidePolygon(x, z, pts)) {
+      const [nx, nz] = nearestOnPolygon(x, z, pts);
+      verts[v] = nx; verts[v + 2] = nz;
+      uvs[(v / 3) * 2] = nx / 6; uvs[(v / 3) * 2 + 1] = nz / 6;
+    }
+  }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
@@ -108,18 +133,20 @@ export function buildLakes(terrain) {
 
     // malha em grelha recortada pelo polígono — a triangulação earcut de
     // contornos OSM irregulares produz triângulos invertidos/esticados
-    const geo = clipGridToPolygon(world, 34);
+    const geo = clipGridToPolygon(world, 48);
     if (!geo) continue;
 
     const mat = new THREE.MeshPhysicalMaterial({
       color: lake.color,
-      roughness: 0.08,
+      roughness: 0.04,
       metalness: 0,
       normalMap: normalTex,
-      normalScale: new THREE.Vector2(0.4, 0.4),
+      normalScale: new THREE.Vector2(0.55, 0.55),
       transparent: true,
-      opacity: 0.9,
-      envMapIntensity: 1.4,
+      opacity: 0.82,
+      envMapIntensity: 1.8,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.06,
       side: THREE.DoubleSide
     });
     materials.push(mat);
