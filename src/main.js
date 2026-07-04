@@ -369,7 +369,7 @@ async function init() {
   markers = buildMarkers(STOPS, route.stopPoints);
   scene.add(markers);
 
-  lakes = buildLakes(terrain);
+  lakes = buildLakes(terrain, sun);
   scene.add(lakes.group);
 
   const scatter = buildScatter(terrain, route.curve);
@@ -420,6 +420,7 @@ async function togglePhoto() {
   if (photoBusy) return;
   if (photo && photo.active) {
     photo.exit();
+    if (lakes) lakes.setPhotoMode(false);
     photoOverlay.classList.remove('open');
     return;
   }
@@ -436,6 +437,7 @@ async function togglePhoto() {
         photoStatus.textContent = `a construir BVH da cena: ${(p * 100).toFixed(0)}%`;
       };
     }
+    if (lakes) lakes.setPhotoMode(true);
     await photo.enter();
     photoStatus.textContent = 'a convergir…';
   } catch (err) {

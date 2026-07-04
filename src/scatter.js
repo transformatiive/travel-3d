@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { TEX, loadTex } from './textures.js';
 
 // Vegetação e rochas procedurais colocadas com regras reais:
 // - árvores (larícios/abetos) abaixo da linha de árvore (~2150 m) em zonas
@@ -110,8 +111,11 @@ export function buildScatter(terrain, routeCurve) {
   if (trees.length) {
     const { trunk, canopyLayers } = makeTreeGeometries();
     const canopy = mergeGeoms(canopyLayers);
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5a4632, roughness: 1 });
-    const canopyMat = new THREE.MeshStandardMaterial({ color: 0x2c4a26, roughness: 0.95 });
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8a7055, roughness: 1 });
+    loadTex(TEX.bark, {}, (t) => { trunkMat.map = t; trunkMat.needsUpdate = true; });
+    const canopyMat = new THREE.MeshStandardMaterial({ color: 0x3d6636, roughness: 0.95 });
+    // mottling real na copa (textura de relva escurecida pela cor base)
+    loadTex(TEX.grass, {}, (t) => { canopyMat.map = t; canopyMat.needsUpdate = true; });
 
     const trunkInst = new THREE.InstancedMesh(trunk, trunkMat, trees.length);
     const canopyInst = new THREE.InstancedMesh(canopy, canopyMat, trees.length);
@@ -142,7 +146,23 @@ export function buildScatter(terrain, routeCurve) {
       rp.setXYZ(i, rp.getX(i) * k, rp.getY(i) * (0.55 + rrnd() * 0.3), rp.getZ(i) * k);
     }
     rockGeo.computeVertexNormals();
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x8d8880, roughness: 1 });
+    // UVs esféricas para as texturas PBR de rocha
+    {
+      const uv = new Float32Array(rp.count * 2);
+      for (let i = 0; i < rp.count; i++) {
+        const x = rp.getX(i), y = rp.getY(i), z = rp.getZ(i);
+        uv[i * 2] = Math.atan2(z, x) / (Math.PI * 2) + 0.5;
+        uv[i * 2 + 1] = y * 0.35 + 0.5;
+      }
+      rockGeo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    }
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0xb0aba2, roughness: 1 });
+    loadTex(TEX.rockDiff, {}, (t) => { rockMat.map = t; rockMat.needsUpdate = true; });
+    loadTex(TEX.rockNor, { srgb: false }, (t) => {
+      rockMat.normalMap = t;
+      rockMat.normalScale.set(1.2, 1.2);
+      rockMat.needsUpdate = true;
+    });
     const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, rocks.length);
     const tone = new THREE.Color();
     rocks.forEach((r, i) => {

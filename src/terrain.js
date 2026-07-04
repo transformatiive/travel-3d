@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TILE, tileRange, lonToMercX, latToMercY, metersPerPixel } from './geo.js';
+import { TEX, loadTex } from './textures.js';
 
 // Elevação real: tiles Terrarium (Mapzen/AWS Open Data, sem chave)
 const ELEV_URL = (z, x, y) =>
@@ -202,28 +203,52 @@ export async function buildTerrain(bounds, onProgress) {
     metalness: 0.0
   });
 
-  // detail texture: grain de alta frequência perto da câmara para o satélite
-  // não ficar desfocado no POV (desvanece com a distância)
-  const detailTex = makeDetailTexture();
+  // detail textures REAIS perto da câmara: relva em zonas verdes, rocha em
+  // zonas cinzentas (escolhido pela cor do próprio satélite), com fade por
+  // distância — o satélite deixa de ficar desfocado no POV
+  const detailTex = makeDetailTexture(); // fallback procedural
+  const detailUniforms = {
+    uDetail: { value: detailTex },
+    uGrass: { value: detailTex },
+    uRock: { value: detailTex },
+    uHasReal: { value: 0 }
+  };
+  let loadedCount = 0;
+  const onReal = () => { if (++loadedCount === 2) detailUniforms.uHasReal.value = 1; };
+  loadTex(TEX.grass, { aniso: 16 }, (t) => { detailUniforms.uGrass.value = t; onReal(); });
+  loadTex(TEX.rockDiff, { aniso: 16 }, (t) => { detailUniforms.uRock.value = t; onReal(); });
+
   mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uDetail = { value: detailTex };
+    Object.assign(shader.uniforms, detailUniforms);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWPos = (modelMatrix * vec4(position, 1.0)).xyz;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nuniform sampler2D uDetail;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nuniform sampler2D uDetail;\nuniform sampler2D uGrass;\nuniform sampler2D uRock;\nuniform float uHasReal;')
       .replace(
         '#include <map_fragment>',
         `#include <map_fragment>
         {
           float dCam = distance(vWPos, cameraPosition);
-          float fade = 1.0 - smoothstep(300.0, 1000.0, dCam);
+          float fade = 1.0 - smoothstep(300.0, 1100.0, dCam);
           if (fade > 0.001) {
-            // duas escalas: micro (1.5 m) e meso (11 m)
-            float d1 = texture2D(uDetail, vWPos.xz / 1.5).r;
-            float d2 = texture2D(uDetail, vWPos.xz / 11.0).r;
-            float grain = mix(1.0, (d1 * 0.6 + d2 * 0.4) * 2.0, 0.6 * fade);
-            diffuseColor.rgb *= grain;
+            if (uHasReal > 0.5) {
+              // quão "verde" é o satélite aqui -> relva vs rocha
+              float greenness = clamp((diffuseColor.g - max(diffuseColor.r, diffuseColor.b)) * 7.0 + 0.45, 0.0, 1.0);
+              vec3 gNear = texture2D(uGrass, vWPos.xz / 3.0).rgb;
+              vec3 gFar  = texture2D(uGrass, vWPos.xz / 17.0).rgb;
+              vec3 rNear = texture2D(uRock,  vWPos.xz / 5.0).rgb;
+              vec3 rFar  = texture2D(uRock,  vWPos.xz / 23.0).rgb;
+              vec3 grass = gNear * 0.62 + gFar * 0.38;
+              vec3 rock  = rNear * 0.62 + rFar * 0.38;
+              // normalizar luminância média (~0.5) para não escurecer o satélite
+              vec3 detail = mix(rock * 2.1, grass * 1.9, greenness);
+              diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * detail, 0.55 * fade);
+            } else {
+              float d1 = texture2D(uDetail, vWPos.xz / 1.5).r;
+              float d2 = texture2D(uDetail, vWPos.xz / 11.0).r;
+              diffuseColor.rgb *= mix(1.0, (d1 * 0.6 + d2 * 0.4) * 2.0, 0.6 * fade);
+            }
           }
         }`
       );

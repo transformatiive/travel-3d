@@ -1,5 +1,7 @@
 import * as THREE from 'three';
+import { Water } from 'three/addons/objects/Water.js';
 import { LAKES } from './lakes.js';
+import { TEX } from './textures.js';
 
 // textura de normais procedural (ondulação) partilhada por todos os lagos
 function makeWaterNormalTexture(size = 256) {
@@ -114,11 +116,22 @@ function clipGridToPolygon(pts, N) {
   return geo;
 }
 
-/** Superfícies de água animadas com o contorno real (OSM) de cada lago. */
-export function buildLakes(terrain) {
+/**
+ * Superfícies de água com o contorno real (OSM) de cada lago.
+ * Shader Water (three.js): reflexos planares em tempo real + normais reais.
+ * Mantém-se uma versão MeshPhysical simples para o modo foto (path tracer
+ * não suporta ShaderMaterial).
+ */
+export function buildLakes(terrain, sunDir) {
   const group = new THREE.Group();
-  const normalTex = makeWaterNormalTexture();
+  const normalTex = makeWaterNormalTexture(); // fallback procedural
+  const realNormals = new THREE.TextureLoader()
+    .setCrossOrigin('anonymous')
+    .load(TEX.waterNormals, (t) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; });
+  realNormals.wrapS = realNormals.wrapT = THREE.RepeatWrapping;
   const materials = [];
+  const waters = [];
+  const photoMeshes = [];
 
   for (const lake of LAKES) {
     let world = lake.pts.map(([lat, lon]) => terrain.toWorld(lat, lon));
@@ -136,32 +149,55 @@ export function buildLakes(terrain) {
     const geo = clipGridToPolygon(world, 48);
     if (!geo) continue;
 
-    const mat = new THREE.MeshPhysicalMaterial({
-      color: lake.color,
-      roughness: 0.04,
-      metalness: 0,
-      normalMap: normalTex,
-      normalScale: new THREE.Vector2(0.55, 0.55),
-      transparent: true,
-      opacity: 0.82,
-      envMapIntensity: 1.8,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.06,
-      side: THREE.DoubleSide
+    // Water assume geometria no plano XY + rotation.x=-90° (usa essa rotação
+    // para calcular o plano de reflexão) — converter XZ -> XY
+    const geoXY = geo.clone();
+    {
+      const p = geoXY.attributes.position;
+      for (let i = 0; i < p.count; i++) p.setXYZ(i, p.getX(i), -p.getZ(i), 0);
+      geoXY.computeVertexNormals();
+    }
+    const water = new Water(geoXY, {
+      textureWidth: 384,
+      textureHeight: 384,
+      waterNormals: realNormals,
+      sunDirection: sunDir ? sunDir.clone() : new THREE.Vector3(0.5, 1, 0.3).normalize(),
+      sunColor: 0xfff2dd,
+      waterColor: lake.color,
+      distortionScale: 1.6,
+      fog: true
     });
-    materials.push(mat);
+    water.material.uniforms.size.value = 6.0; // escala das ondas (~física)
+    water.rotation.x = -Math.PI / 2;
+    water.position.y = level;
+    water.renderOrder = 1;
+    group.add(water);
+    waters.push(water);
 
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.y = level;
-    mesh.receiveShadow = true;
-    mesh.renderOrder = 1;
-    group.add(mesh);
+    // versão simples para o modo foto (path tracing)
+    const photoMat = new THREE.MeshPhysicalMaterial({
+      color: lake.color, roughness: 0.05, metalness: 0,
+      normalMap: normalTex, normalScale: new THREE.Vector2(0.5, 0.5),
+      transparent: true, opacity: 0.85
+    });
+    materials.push(photoMat);
+    const photoMesh = new THREE.Mesh(geo, photoMat);
+    photoMesh.position.y = level;
+    photoMesh.visible = false;
+    group.add(photoMesh);
+    photoMeshes.push(photoMesh);
   }
 
-  // animação: deslizar as normais (duas direções ligeiramente diferentes por lago)
   function update(t) {
+    for (const w of waters) w.material.uniforms.time.value = t * 0.5;
     normalTex.offset.set(t * 0.008, t * 0.005);
   }
 
-  return { group, update, materials };
+  // trocar para a versão simples durante o modo foto
+  function setPhotoMode(on) {
+    waters.forEach((w) => (w.visible = !on));
+    photoMeshes.forEach((m) => (m.visible = on));
+  }
+
+  return { group, update, materials, setPhotoMode };
 }
