@@ -421,7 +421,7 @@ async function init() {
   }
   if (CFG.flatWater) {
     flatWater = buildFlatWater(terrain, CFG.flatWater.altitude, CFG.flatWater.color, sun);
-    if (flatWater) scene.add(flatWater);
+    if (flatWater) scene.add(flatWater.mesh);
   }
 
   const scatter = buildScatter(terrain, route.curve, {
@@ -488,7 +488,7 @@ async function togglePhoto() {
       photo = await createPhotoMode({
         renderer, scene, camera, sunDir: sun.clone(),
         hideDuringPhoto: [sky, markers, hiker, route.tubeFar, route.tubeNear, route.dots,
-          grass && grass.mesh, river && river.group, flatWater].filter(Boolean)
+          grass && grass.mesh].filter(Boolean)
       });
       photo.onBuildProgress = (p) => {
         photoStatus.textContent = `a construir BVH da cena: ${(p * 100).toFixed(0)}%`;
@@ -554,7 +554,7 @@ function animate() {
     }
     if (lakes) lakes.update(t);
     if (river) river.update(t);
-    if (flatWater) flatWater.material.uniforms.time.value = t * 0.5;
+    if (flatWater) flatWater.update(t);
     if (grass && mode === 'pov') grass.update(camera.position);
     updateShadowFrustum();
     updateHUD();

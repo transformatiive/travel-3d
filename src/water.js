@@ -1,6 +1,28 @@
 import * as THREE from 'three';
-import { Water } from 'three/addons/objects/Water.js';
-import { TEX } from './textures.js';
+import { TEX, loadTex } from './textures.js';
+
+// Água PBR determinística (funciona igual em todas as GPUs, sem passes de
+// espelho): normais reais de água animadas + reflexos do ambiente PMREM do
+// céu com fresnel via clearcoat. Também é suportada pelo path tracer (Foto).
+function makeWaterMaterial(color, fallbackNormals, strength = 0.55) {
+  const mat = new THREE.MeshPhysicalMaterial({
+    color,
+    roughness: 0.06,
+    metalness: 0,
+    normalMap: fallbackNormals,
+    normalScale: new THREE.Vector2(strength, strength),
+    transparent: true,
+    opacity: 0.88,
+    envMapIntensity: 2.4,
+    clearcoat: 1,
+    clearcoatRoughness: 0.08
+  });
+  loadTex(TEX.waterNormals, { srgb: false }, (t) => {
+    mat.normalMap = t;
+    mat.needsUpdate = true;
+  });
+  return mat;
+}
 
 // textura de normais procedural (ondulação) partilhada por todos os lagos
 function makeWaterNormalTexture(size = 256) {
@@ -124,13 +146,7 @@ function clipGridToPolygon(pts, N) {
 export function buildLakes(terrain, sunDir, lakesData) {
   const group = new THREE.Group();
   const normalTex = makeWaterNormalTexture(); // fallback procedural
-  const realNormals = new THREE.TextureLoader()
-    .setCrossOrigin('anonymous')
-    .load(TEX.waterNormals, (t) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; });
-  realNormals.wrapS = realNormals.wrapT = THREE.RepeatWrapping;
   const materials = [];
-  const waters = [];
-  const photoMeshes = [];
 
   for (const lake of lakesData) {
     let world = lake.pts.map(([lat, lon]) => terrain.toWorld(lat, lon));
@@ -157,47 +173,25 @@ export function buildLakes(terrain, sunDir, lakesData) {
       for (let i = 0; i < p.count; i++) uv.setXY(i, p.getX(i) / 6, p.getY(i) / 6);
     }
 
-    const water = new Water(geoXY, {
-      textureWidth: 384,
-      textureHeight: 384,
-      waterNormals: realNormals,
-      sunDirection: sunDir ? sunDir.clone() : new THREE.Vector3(0.5, 1, 0.3).normalize(),
-      sunColor: 0xfff2dd,
-      waterColor: lake.color,
-      distortionScale: 1.6,
-      fog: true
-    });
-    water.material.uniforms.size.value = 6.0; // escala das ondas (~física)
-    water.rotation.x = -Math.PI / 2;
-    water.position.y = level;
-    water.renderOrder = 1;
-    group.add(water);
-    waters.push(water);
-
-    // versão simples para o modo foto (path tracing)
-    const photoMat = new THREE.MeshPhysicalMaterial({
-      color: lake.color, roughness: 0.05, metalness: 0,
-      normalMap: normalTex, normalScale: new THREE.Vector2(0.5, 0.5),
-      transparent: true, opacity: 0.85
-    });
-    materials.push(photoMat);
-    const photoMesh = new THREE.Mesh(geoXY.clone().rotateX(-Math.PI / 2), photoMat);
-    photoMesh.position.y = level;
-    photoMesh.visible = false;
-    group.add(photoMesh);
-    photoMeshes.push(photoMesh);
+    const mat = makeWaterMaterial(lake.color, normalTex);
+    materials.push(mat);
+    const mesh = new THREE.Mesh(geoXY.rotateX(-Math.PI / 2), mat);
+    mesh.position.y = level;
+    mesh.receiveShadow = true;
+    mesh.renderOrder = 1;
+    group.add(mesh);
   }
 
   function update(t) {
-    for (const w of waters) w.material.uniforms.time.value = t * 0.5;
-    normalTex.offset.set(t * 0.008, t * 0.005);
+    // deslizar as normais de todas as águas (a textura é partilhada por material)
+    for (const m of materials) {
+      if (m.normalMap) m.normalMap.offset.set(t * 0.012, t * 0.007);
+    }
+    normalTex.offset.set(t * 0.012, t * 0.007);
   }
 
-  // trocar para a versão simples durante o modo foto
-  function setPhotoMode(on) {
-    waters.forEach((w) => (w.visible = !on));
-    photoMeshes.forEach((m) => (m.visible = on));
-  }
+  // a água PBR é suportada pelo path tracer — nada a trocar no modo foto
+  function setPhotoMode() {}
 
   return { group, update, materials, setPhotoMode };
 }
@@ -209,12 +203,8 @@ export function buildLakes(terrain, sunDir, lakesData) {
 export function buildRiver(terrain, polys, color) {
   const group = new THREE.Group();
   const normalTex = makeWaterNormalTexture();
-  const mat = new THREE.MeshPhysicalMaterial({
-    color, roughness: 0.05, metalness: 0,
-    normalMap: normalTex, normalScale: new THREE.Vector2(0.7, 0.7),
-    transparent: true, opacity: 0.85, envMapIntensity: 1.6,
-    clearcoat: 1, clearcoatRoughness: 0.05, side: THREE.DoubleSide
-  });
+  const mat = makeWaterMaterial(color, normalTex, 0.75);
+  mat.side = THREE.DoubleSide;
   const h = terrain.heightAt;
   for (const poly of polys) {
     let world = poly.map(([lat, lon]) => terrain.toWorld(lat, lon));
@@ -235,7 +225,9 @@ export function buildRiver(terrain, polys, color) {
     mesh.renderOrder = 1;
     group.add(mesh);
   }
-  const update = (t) => normalTex.offset.set(t * 0.05, t * 0.02); // corrente
+  const update = (t) => {
+    if (mat.normalMap) mat.normalMap.offset.set(t * 0.05, t * 0.02); // corrente
+  };
   return { group, update };
 }
 
@@ -274,16 +266,12 @@ export function buildFlatWater(terrain, altitude, color, sunDir) {
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geo.setIndex(idx);
 
-  const normals = new THREE.TextureLoader().setCrossOrigin('anonymous')
-    .load(TEX.waterNormals, (t) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; });
-  normals.wrapS = normals.wrapT = THREE.RepeatWrapping;
-  const water = new Water(geo, {
-    textureWidth: 512, textureHeight: 512,
-    waterNormals: normals,
-    sunDirection: sunDir.clone(), sunColor: 0xfff2dd,
-    waterColor: color, distortionScale: 2.2, fog: true
-  });
-  water.rotation.x = -Math.PI / 2;
+  const mat = makeWaterMaterial(color, makeWaterNormalTexture(), 0.6);
+  const water = new THREE.Mesh(geo.rotateX(-Math.PI / 2), mat);
   water.position.y = level + 0.5;
-  return water;
+  water.receiveShadow = true;
+  const update = (t) => {
+    if (mat.normalMap) mat.normalMap.offset.set(t * 0.012, t * 0.007);
+  };
+  return { mesh: water, update };
 }
