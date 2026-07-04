@@ -109,6 +109,17 @@
     }
     #altitude b { color: var(--accent); font-size: 0.95rem; }
 
+    #photo-overlay {
+      position: fixed; top: 76px; right: 16px; z-index: 20;
+      display: none; flex-direction: column; gap: 8px; align-items: flex-end;
+    }
+    #photo-overlay.open { display: flex; }
+    #photo-status {
+      background: var(--panel-bg); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 10px;
+      padding: 8px 14px; font-size: 0.8rem; color: var(--accent);
+    }
+
     @media (max-width: 720px) {
       #itinerary { display: none; }
       #controls-hint { white-space: normal; width: 90vw; }
@@ -134,6 +145,13 @@
     <button id="btn-tour" class="btn primary">▶ Tour aéreo</button>
     <button id="btn-pov" class="btn">🥾 Modo POV</button>
     <button id="btn-orbit" class="btn">🛰 Órbita</button>
+    <button id="btn-photo" class="btn">📸 Foto</button>
+    <button id="btn-fx" class="btn active" title="GTAO + bloom">✨ FX</button>
+  </div>
+
+  <div id="photo-overlay">
+    <div id="photo-status">…</div>
+    <button id="photo-exit" class="btn">✕ Sair do modo foto</button>
   </div>
 
   <div id="itinerary" class="hud">

@@ -12,6 +12,44 @@ const SAT_URL = (z, x, y) =>
 const Z_ELEV = 13; // resolução da malha de elevação
 const Z_SAT = 16;  // resolução da textura de satélite (Z_ELEV + 3 => 8x)
 
+// ruído de valor multi-oitava para a detail texture (relva/gravilha)
+function makeDetailTexture(size = 512) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const grid = 64;
+  const vals = new Float32Array((grid + 1) * (grid + 1));
+  let s = 1234567;
+  const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < vals.length; i++) vals[i] = rnd();
+  const smooth = (t) => t * t * (3 - 2 * t);
+  function noise(x, y) {
+    const xi = Math.floor(x) % grid, yi = Math.floor(y) % grid;
+    const xf = x - Math.floor(x), yf = y - Math.floor(y);
+    const a = vals[yi * (grid + 1) + xi], b = vals[yi * (grid + 1) + xi + 1];
+    const cc = vals[(yi + 1) * (grid + 1) + xi], d = vals[(yi + 1) * (grid + 1) + xi + 1];
+    return a + (b - a) * smooth(xf) + (cc - a + (a - b + d - cc) * smooth(xf)) * smooth(yf);
+  }
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const n =
+        noise((x / size) * 16, (y / size) * 16) * 0.5 +
+        noise((x / size) * 37, (y / size) * 37) * 0.3 +
+        noise((x / size) * 64, (y / size) * 64) * 0.2;
+      const v = (0.35 + n * 0.3) * 255; // centrado em ~0.5 para não escurecer em média
+      const i = (y * size + x) * 4;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 16; // manter o grain em ângulos rasantes (senão o mip médio apaga-o)
+  return tex;
+}
+
 function loadImage(url, retries = 2) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -154,7 +192,7 @@ export async function buildTerrain(bounds, onProgress) {
 
   const tex = new THREE.CanvasTexture(satCanvas);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 8;
+  tex.anisotropy = 16;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
 
@@ -164,8 +202,50 @@ export async function buildTerrain(bounds, onProgress) {
     metalness: 0.0
   });
 
+  // detail texture: grain de alta frequência perto da câmara para o satélite
+  // não ficar desfocado no POV (desvanece com a distância)
+  const detailTex = makeDetailTexture();
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uDetail = { value: detailTex };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWPos = (modelMatrix * vec4(position, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nuniform sampler2D uDetail;')
+      .replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>
+        {
+          float dCam = distance(vWPos, cameraPosition);
+          float fade = 1.0 - smoothstep(300.0, 1000.0, dCam);
+          if (fade > 0.001) {
+            // duas escalas: micro (1.5 m) e meso (11 m)
+            float d1 = texture2D(uDetail, vWPos.xz / 1.5).r;
+            float d2 = texture2D(uDetail, vWPos.xz / 11.0).r;
+            float grain = mix(1.0, (d1 * 0.6 + d2 * 0.4) * 2.0, 0.6 * fade);
+            diffuseColor.rgb *= grain;
+          }
+        }`
+      );
+  };
+
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
+  mesh.castShadow = true;
 
-  return { mesh, heightAt, toWorld, size: { width, depth }, hMin };
+  // amostragem da cor do satélite (para colocar vegetação/rochas) — cópia reduzida
+  const sampleCanvas = document.createElement('canvas');
+  sampleCanvas.width = 1024;
+  sampleCanvas.height = Math.round((1024 * satCanvas.height) / satCanvas.width);
+  const sctx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+  sctx.drawImage(satCanvas, 0, 0, sampleCanvas.width, sampleCanvas.height);
+  const sdata = sctx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height).data;
+  function satSample(wx, wz) {
+    const u = Math.min(0.999, Math.max(0, (wx + width / 2) / width));
+    const v = Math.min(0.999, Math.max(0, (wz + depth / 2) / depth));
+    const i = ((v * sampleCanvas.height) | 0) * sampleCanvas.width + ((u * sampleCanvas.width) | 0);
+    return [sdata[i * 4], sdata[i * 4 + 1], sdata[i * 4 + 2]];
+  }
+
+  return { mesh, heightAt, toWorld, satSample, size: { width, depth }, hMin };
 }

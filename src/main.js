@@ -1,20 +1,31 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Sky } from 'three/addons/objects/Sky.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { buildTerrain } from './terrain.js';
 import { buildRoute, buildHiker, STOPS } from './route.js';
 import { buildMarkers } from './markers.js';
+import { buildLakes } from './water.js';
+import { buildScatter } from './scatter.js';
+import { buildGrass } from './grass.js';
+import { createPhotoMode } from './photo.js';
 
 // ---------- região (screenshot: vale de Zermatt / Sunnegga / Rothorn) ----------
 const BOUNDS = { lonMin: 7.74, lonMax: 7.81, latMin: 45.98, latMax: 46.03 };
-const EYE_HEIGHT = 1.7; // altura média dos olhos (POV)
+const EYE_HEIGHT = 1.9; // altura dos olhos (POV)
 
 // ---------- renderer / cena ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.75;
+renderer.toneMappingExposure = 0.72;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.getElementById('app').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -37,16 +48,59 @@ const sunElev = 38, sunAzim = 135;
 sun.setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - sunElev), THREE.MathUtils.degToRad(sunAzim));
 skyU.sunPosition.value.copy(sun);
 
-const sunLight = new THREE.DirectionalLight(0xfff2dd, 2.6);
-sunLight.position.copy(sun).multiplyScalar(20000);
-scene.add(sunLight);
-scene.add(new THREE.HemisphereLight(0xbdd7f2, 0x4c4438, 0.9));
+// ambiente PMREM a partir do céu físico (reflexos na água, luz ambiente)
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTexture = pmrem.fromScene(sky, 0.02).texture;
+scene.add(sky); // fromScene retira o objeto da cena principal — voltar a adicionar
+scene.environment = envTexture;
+scene.environmentIntensity = 0.22;
+
+// sombras dinâmicas do sol: frustum ortográfico que segue a câmara
+const sunLight = new THREE.DirectionalLight(0xfff2dd, 2.4);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(4096, 4096);
+const SHADOW_SPAN = 1500;
+sunLight.shadow.camera.left = -SHADOW_SPAN;
+sunLight.shadow.camera.right = SHADOW_SPAN;
+sunLight.shadow.camera.top = SHADOW_SPAN;
+sunLight.shadow.camera.bottom = -SHADOW_SPAN;
+sunLight.shadow.camera.near = 100;
+sunLight.shadow.camera.far = 30000;
+sunLight.shadow.bias = -0.0004;
+sunLight.shadow.normalBias = 3;
+scene.add(sunLight, sunLight.target);
+scene.add(new THREE.HemisphereLight(0xbdd7f2, 0x4c4438, 0.45));
+
+const shadowFocus = new THREE.Vector3();
+function updateShadowFrustum() {
+  // centrar o frustum de sombras no ponto de interesse atual
+  shadowFocus.copy(mode === 'orbit' ? controls.target : camera.position);
+  sunLight.position.copy(shadowFocus).addScaledVector(sun, 12000);
+  sunLight.target.position.copy(shadowFocus);
+}
+
+// ---------- pós-processamento (GTAO + bloom) ----------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const gtao = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
+gtao.blendIntensity = 0.9;
+composer.addPass(gtao);
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight), 0.22, 0.5, 0.9
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+let fxEnabled = true;
 
 // ---------- estado ----------
 let terrain = null;
 let route = null;
 let hiker = null;
 let markers = null;
+let lakes = null;
+let grass = null;
+let photo = null;
+let photoBusy = false;
 let mode = 'orbit'; // 'orbit' | 'tour' | 'pov'
 let tourT = 0;
 const TOUR_SECONDS = 160;
@@ -164,6 +218,7 @@ function setMode(next) {
     route.dots.visible = mode !== 'pov';
     route.tubeNear.visible = mode === 'pov';
   }
+  if (grass) grass.mesh.visible = mode === 'pov'; // relva só faz sentido ao nível do chão
 }
 
 document.addEventListener('pointerlockchange', () => {
@@ -288,6 +343,16 @@ async function init() {
   markers = buildMarkers(STOPS, route.stopPoints);
   scene.add(markers);
 
+  lakes = buildLakes(terrain);
+  scene.add(lakes.group);
+
+  const scatter = buildScatter(terrain);
+  scene.add(scatter.group);
+  console.log('vegetação:', scatter.counts);
+
+  grass = buildGrass(terrain);
+  scene.add(grass.mesh);
+
   buildStopList();
 
   // enquadramento inicial: sobre o vale a olhar para a zona dos lagos
@@ -300,11 +365,60 @@ async function init() {
   window.__travel3d = { terrain, route }; // handle de debug/testes
 }
 
+// ---------- modo foto (path tracing) ----------
+const photoOverlay = document.getElementById('photo-overlay');
+const photoStatus = document.getElementById('photo-status');
+
+async function togglePhoto() {
+  if (photoBusy) return;
+  if (photo && photo.active) {
+    photo.exit();
+    photoOverlay.classList.remove('open');
+    return;
+  }
+  photoBusy = true;
+  photoOverlay.classList.add('open');
+  photoStatus.textContent = 'a preparar path tracing (pode demorar ~10-30 s)…';
+  try {
+    if (!photo) {
+      photo = await createPhotoMode({
+        renderer, scene, camera, sunDir: sun.clone(),
+        hideDuringPhoto: [sky, markers, hiker, route.tubeFar, route.tubeNear, route.dots, grass.mesh]
+      });
+      photo.onBuildProgress = (p) => {
+        photoStatus.textContent = `a construir BVH da cena: ${(p * 100).toFixed(0)}%`;
+      };
+    }
+    await photo.enter();
+    photoStatus.textContent = 'a convergir…';
+  } catch (err) {
+    console.error('modo foto falhou:', err);
+    photoStatus.textContent = 'o modo foto não é suportado neste dispositivo';
+    setTimeout(() => photoOverlay.classList.remove('open'), 2500);
+    photo = null;
+  }
+  photoBusy = false;
+}
+document.getElementById('btn-photo').addEventListener('click', togglePhoto);
+document.getElementById('photo-exit').addEventListener('click', togglePhoto);
+
+document.getElementById('btn-fx').addEventListener('click', (e) => {
+  fxEnabled = !fxEnabled;
+  e.target.classList.toggle('active', fxEnabled);
+});
+
 // ---------- loop ----------
 const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, clock.getDelta());
+  const t = clock.elapsedTime;
+
+  if (photo && photo.active) {
+    const samples = photo.renderSample();
+    photoStatus.textContent = `path tracing — ${samples} amostras (a imagem vai limpando)`;
+    return;
+  }
 
   if (terrain) {
     if (mode === 'tour') updateTour(dt);
@@ -319,15 +433,20 @@ function animate() {
         s.scale.set(s.userData.baseH * s.userData.aspect * k, s.userData.baseH * k, 1);
       }
     }
+    if (lakes) lakes.update(t);
+    if (grass && mode === 'pov') grass.update(camera.position);
+    updateShadowFrustum();
     updateHUD();
   }
-  renderer.render(scene, camera);
+  if (fxEnabled) composer.render();
+  else renderer.render(scene, camera);
 }
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 init();
