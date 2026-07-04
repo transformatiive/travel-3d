@@ -1,42 +1,20 @@
 import * as THREE from 'three';
 
-// Itinerário: 5-Seen-Wanderung (rota dos 5 lagos), Zermatt.
-// Blauherd -> Stellisee -> Grindjisee -> Grünsee -> Moosjisee -> Leisee -> Sunnegga
-// Coordenadas reais (OpenStreetMap)
-export const STOPS = [
-  { id: 'blauherd',  name: 'Blauherd',   alt: 2571, lake: false, lat: 46.0166, lon: 7.7883, desc: 'Início — estação do teleférico' },
-  { id: 'stellisee', name: 'Stellisee',  alt: 2537, lake: true,  lat: 46.0134, lon: 7.8004, desc: 'Lago 1 — reflexo do Matterhorn' },
-  { id: 'grindjisee', name: 'Grindjisee', alt: 2334, lake: true, lat: 46.0115, lon: 7.7912, desc: 'Lago 2 — flores raras' },
-  { id: 'grunsee',   name: 'Grünsee',    alt: 2300, lake: true,  lat: 46.0056, lon: 7.7857, desc: 'Lago 3 — paisagem lunar' },
-  { id: 'moosjisee', name: 'Moosjisee',  alt: 2140, lake: true,  lat: 46.0104, lon: 7.7796, desc: 'Lago 4 — água turquesa glaciar' },
-  { id: 'leisee',    name: 'Leisee',     alt: 2232, lake: true,  lat: 46.0150, lon: 7.7724, desc: 'Lago 5 — praia e zona de banho' },
-  { id: 'sunnegga',  name: 'Sunnegga',   alt: 2288, lake: false, lat: 46.0171, lon: 7.7700, desc: 'Fim — funicular para Zermatt' }
-];
-
-// pontos intermédios aproximados para dar forma ao trilho entre paragens
-const VIA = {
-  'blauherd->stellisee': [[46.0152, 7.7955]],
-  'stellisee->grindjisee': [[46.0121, 7.7962]],
-  'grindjisee->grunsee': [[46.0085, 7.7885]],
-  'grunsee->moosjisee': [[46.0068, 7.7822]],
-  'moosjisee->leisee': [[46.0128, 7.7758]],
-  'leisee->sunnegga': []
-};
-
 /**
  * Constrói a curva do trilho agarrada ao terreno e o tubo visível.
- * Devolve { curve, tube, stopPoints } — stopPoints[i] é o Vector3 de cada paragem.
+ * stops/via vêm da configuração do destino (destinations.js).
+ * Devolve { curve, group, stopPoints } — stopPoints[i] é o Vector3 de cada paragem.
  */
-export function buildRoute(terrain) {
+export function buildRoute(terrain, stops, via, lift) {
   const raw = [];
   const stopPoints = [];
-  for (let i = 0; i < STOPS.length; i++) {
-    const p = terrain.toWorld(STOPS[i].lat, STOPS[i].lon);
+  for (let i = 0; i < stops.length; i++) {
+    const p = terrain.toWorld(stops[i].lat, stops[i].lon);
     stopPoints.push(p.clone());
     raw.push(p);
-    if (i < STOPS.length - 1) {
-      const key = `${STOPS[i].id}->${STOPS[i + 1].id}`;
-      for (const [lat, lon] of VIA[key] || []) raw.push(terrain.toWorld(lat, lon));
+    if (i < stops.length - 1) {
+      const key = `${stops[i].id}->${stops[i + 1].id}`;
+      for (const [lat, lon] of via[key] || []) raw.push(terrain.toWorld(lat, lon));
     }
   }
 
@@ -47,6 +25,7 @@ export function buildRoute(terrain) {
   for (let i = 0; i <= N; i++) {
     const p = roughCurve.getPoint(i / N);
     p.y = terrain.heightAt(p.x, p.z) + 1.2;
+    if (lift) p.y = lift(p.x, p.z, p.y); // lift opcional (ex.: passar por cima da ponte)
     glued.push(p);
   }
   const curve = new THREE.CatmullRomCurve3(glued, false, 'catmullrom', 0.0);

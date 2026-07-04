@@ -7,15 +7,20 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { buildTerrain } from './terrain.js';
-import { buildRoute, buildHiker, STOPS } from './route.js';
+import { buildRoute, buildHiker } from './route.js';
 import { buildMarkers } from './markers.js';
-import { buildLakes } from './water.js';
+import { buildLakes, buildRiver, buildFlatWater } from './water.js';
 import { buildScatter } from './scatter.js';
 import { buildGrass } from './grass.js';
+import { buildBridge } from './bridge.js';
 import { createPhotoMode } from './photo.js';
+import { DESTINATIONS, currentDestination } from './destinations.js';
 
-// ---------- região (screenshot: vale de Zermatt / Sunnegga / Rothorn) ----------
-const BOUNDS = { lonMin: 7.74, lonMax: 7.81, latMin: 45.98, latMax: 46.03 };
+// ---------- destino ativo ----------
+const DEST_KEY = currentDestination();
+const CFG = DESTINATIONS[DEST_KEY];
+const STOPS = CFG.stops;
+const BOUNDS = CFG.bounds;
 const EYE_HEIGHT = 1.9; // altura dos olhos (POV)
 
 // ---------- renderer / cena ----------
@@ -118,12 +123,15 @@ let route = null;
 let hiker = null;
 let markers = null;
 let lakes = null;
+let river = null;
+let flatWater = null;
+let bridge = null;
 let grass = null;
 let photo = null;
 let photoBusy = false;
 let mode = 'orbit'; // 'orbit' | 'tour' | 'pov'
 let tourT = 0;
-const TOUR_SECONDS = 160;
+const TOUR_SECONDS = CFG.tourSeconds || 160;
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -317,16 +325,35 @@ function updateCamAnim(dt) {
 
 function buildStopList() {
   const wrap = document.getElementById('stops');
+  let lakeN = 0;
   STOPS.forEach((s, i) => {
     const el = document.createElement('div');
     el.className = 'stop';
     el.innerHTML = `
-      <div class="dot ${s.lake ? 'lake' : ''}">${s.lake ? i : '▲'}</div>
+      <div class="dot ${s.lake ? 'lake' : ''}">${s.lake ? ++lakeN : '▲'}</div>
       <div class="info"><b>${s.name}</b><small>${s.alt} m — ${s.desc}</small></div>`;
     el.addEventListener('click', () => flyToStop(i));
     wrap.appendChild(el);
   });
 }
+
+// título e seletor de destino
+function buildDestUI() {
+  document.querySelector('#title h1').innerHTML = CFG.name;
+  document.querySelector('#title p').textContent = CFG.subtitle;
+  const sel = document.getElementById('dest-select');
+  for (const [key, d] of Object.entries(DESTINATIONS)) {
+    const opt = document.createElement('option');
+    opt.value = key;
+    opt.textContent = d.tab;
+    opt.selected = key === DEST_KEY;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', () => {
+    location.search = `?dest=${sel.value}`;
+  });
+}
+buildDestUI();
 
 // ---------- HUD ----------
 const altValue = document.getElementById('alt-value');
@@ -350,7 +377,7 @@ async function init() {
     terrain = await buildTerrain(BOUNDS, (done, total) => {
       bar.style.width = `${((done / total) * 100).toFixed(1)}%`;
       status.textContent = `terreno e satélite: ${done}/${total} tiles`;
-    });
+    }, CFG.satZoom);
   } catch (err) {
     status.textContent = 'erro ao carregar dados de terreno — verifique a ligação e recarregue';
     console.error(err);
@@ -359,7 +386,22 @@ async function init() {
 
   scene.add(terrain.mesh);
 
-  route = buildRoute(terrain);
+  // extras 3D do destino (ex.: Ponte dei Salti) — antes da rota, para a
+  // rota poder passar por cima do tabuleiro
+  let lift = null;
+  if (CFG.bridge) {
+    bridge = buildBridge(terrain, CFG.bridge);
+    scene.add(bridge.group);
+    lift = (x, z, y) => {
+      // transição suave para o tabuleiro (sem picos na rota)
+      const d = Math.hypot(x - bridge.mid.x, z - bridge.mid.z);
+      const k = Math.min(1, Math.max(0, 1 - (d - bridge.halfLen * 0.55) / (bridge.halfLen * 0.6)));
+      const s = k * k * (3 - 2 * k);
+      return y + Math.max(0, bridge.deckY + 1.0 - y) * s;
+    };
+  }
+
+  route = buildRoute(terrain, CFG.stops, CFG.via, lift);
   scene.add(route.group);
 
   hiker = buildHiker();
@@ -369,10 +411,23 @@ async function init() {
   markers = buildMarkers(STOPS, route.stopPoints);
   scene.add(markers);
 
-  lakes = buildLakes(terrain, sun);
-  scene.add(lakes.group);
+  if (CFG.lakes && CFG.lakes.length) {
+    lakes = buildLakes(terrain, sun, CFG.lakes);
+    scene.add(lakes.group);
+  }
+  if (CFG.rivers) {
+    river = buildRiver(terrain, CFG.rivers.polys, CFG.rivers.color);
+    scene.add(river.group);
+  }
+  if (CFG.flatWater) {
+    flatWater = buildFlatWater(terrain, CFG.flatWater.altitude, CFG.flatWater.color, sun);
+    if (flatWater) scene.add(flatWater);
+  }
 
-  const scatter = buildScatter(terrain, route.curve);
+  const scatter = buildScatter(terrain, route.curve, {
+    treeLine: CFG.treeLine, rockBand: CFG.rockBand,
+    waterPolys: [...(CFG.rivers ? CFG.rivers.polys : []), ...(CFG.lakes || []).map((l) => l.pts)]
+  });
   scene.add(scatter.group);
   console.log('vegetação:', scatter.counts);
 
@@ -390,6 +445,7 @@ async function init() {
   setMode('orbit');
   window.__travel3d = {
     terrain, route, camera, controls,
+    bridge,
     // câmara livre para capturas (desativa controladores até mudar de modo)
     setCam(px, py, pz, tx, ty, tz) {
       mode = 'free';
@@ -431,7 +487,8 @@ async function togglePhoto() {
     if (!photo) {
       photo = await createPhotoMode({
         renderer, scene, camera, sunDir: sun.clone(),
-        hideDuringPhoto: [sky, markers, hiker, route.tubeFar, route.tubeNear, route.dots, grass.mesh]
+        hideDuringPhoto: [sky, markers, hiker, route.tubeFar, route.tubeNear, route.dots,
+          grass && grass.mesh, river && river.group, flatWater].filter(Boolean)
       });
       photo.onBuildProgress = (p) => {
         photoStatus.textContent = `a construir BVH da cena: ${(p * 100).toFixed(0)}%`;
@@ -496,6 +553,8 @@ function animate() {
       }
     }
     if (lakes) lakes.update(t);
+    if (river) river.update(t);
+    if (flatWater) flatWater.material.uniforms.time.value = t * 0.5;
     if (grass && mode === 'pov') grass.update(camera.position);
     updateShadowFrustum();
     updateHUD();

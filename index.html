@@ -41,6 +41,13 @@
     #title h1 { font-size: 1.05rem; font-weight: 600; }
     #title h1 span { color: var(--accent); }
     #title p { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+    #dest-select {
+      margin-top: 8px; width: 100%;
+      background: rgba(255,255,255,0.08); color: var(--text);
+      border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+      padding: 6px 8px; font-size: 0.8rem; cursor: pointer;
+    }
+    #dest-select option { background: #16202e; }
 
     #itinerary {
       top: 96px; left: 16px; width: 250px; max-height: calc(100vh - 200px); overflow-y: auto;
@@ -139,6 +146,7 @@
   <div id="title" class="hud">
     <h1>Rota dos <span>5 Lagos</span> — Zermatt</h1>
     <p>≈ 9,8 km · ≈ 3 h · Blauherd → Sunnegga</p>
+    <select id="dest-select" title="Escolher itinerário"></select>
   </div>
 
   <div id="actions" class="hud">

@@ -61,7 +61,25 @@ function mergeGeoms(geoms) {
   return out;
 }
 
-export function buildScatter(terrain, routeCurve) {
+export function buildScatter(terrain, routeCurve, opts = {}) {
+  const TREE_LINE = opts.treeLine ?? 2250;
+  const [ROCK_MIN, ROCK_MAX] = opts.rockBand ?? [2250, 2900];
+
+  // zonas de água (polígonos lat/lon) onde não pode nascer vegetação
+  const waterPolys = (opts.waterPolys || []).map((poly) =>
+    poly.map(([lat, lon]) => { const p = terrain.toWorld(lat, lon); return [p.x, p.z]; })
+  );
+  function inWater(x, z) {
+    for (const poly of waterPolys) {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [xi, zi] = poly[i], [xj, zj] = poly[j];
+        if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+      }
+      if (inside) return true;
+    }
+    return false;
+  }
   // manter o trilho limpo: sem rochas/árvores em cima do caminho
   const routePts = [];
   if (routeCurve) for (let i = 0; i <= 220; i++) routePts.push(routeCurve.getPoint(i / 220));
@@ -76,7 +94,6 @@ export function buildScatter(terrain, routeCurve) {
   const { width, depth } = terrain.size;
   const sat = terrain.satSample;
 
-  const TREE_LINE = 2250; // altitude (m) acima da qual não há floresta
   const group = new THREE.Group();
 
   // ---------- candidatos ----------
@@ -93,13 +110,13 @@ export function buildScatter(terrain, routeCurve) {
     if (alt < TREE_LINE && trees.length < 70000) {
       // floresta: pixel esverdeado-escuro, declive moderado
       const greenish = g > r + 3 && g > b + 2 && g < 145;
-      if (greenish && slopeAt(terrain, x, z) < 1.25 && !nearRoute(x, z, 36)) {
+      if (greenish && slopeAt(terrain, x, z) < 1.25 && !nearRoute(x, z, 36) && !inWater(x, z)) {
         trees.push({ x, z, h, shade: 0.75 + rnd() * 0.5, s: 0.7 + rnd() * 0.9 });
       }
-    } else if (alt > 2250 && alt < 2900 && rocks.length < 6000) {
+    } else if (alt > ROCK_MIN && alt < ROCK_MAX && rocks.length < 6000) {
       // rochedos: pixel acinzentado, com alguma probabilidade
       const gray = Math.abs(r - g) < 18 && Math.abs(g - b) < 18 && r > 70 && r < 170;
-      if (gray && rnd() < 0.35 && slopeAt(terrain, x, z) < 1.2 && !nearRoute(x, z, 144)) {
+      if (gray && rnd() < 0.35 && slopeAt(terrain, x, z) < 1.2 && !nearRoute(x, z, 144) && !inWater(x, z)) {
         rocks.push({ x, z, h, tone: 0.6 + rnd() * 0.5, s: 0.4 + rnd() * 1.4, ry: rnd() * Math.PI });
       }
     }

@@ -11,7 +11,6 @@ const SAT_URL = (z, x, y) =>
   `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
 
 const Z_ELEV = 13; // resolução da malha de elevação
-const Z_SAT = 16;  // resolução da textura de satélite (Z_ELEV + 3 => 8x)
 
 // ruído de valor multi-oitava para a detail texture (relva/gravilha)
 function makeDetailTexture(size = 512) {
@@ -71,7 +70,8 @@ function loadImage(url, retries = 2) {
  * Constrói o terreno da região `bounds` ({lonMin, lonMax, latMin, latMax}).
  * Devolve { mesh, heightAt(x,z), toWorld(lat,lon), size }.
  */
-export async function buildTerrain(bounds, onProgress) {
+export async function buildTerrain(bounds, onProgress, satZoom = 16) {
+  const Z_SAT = satZoom;
   const latMid = (bounds.latMin + bounds.latMax) / 2;
   const elevRange = tileRange(bounds, Z_ELEV);
   const satFactor = Math.pow(2, Z_SAT - Z_ELEV);
