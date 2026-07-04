@@ -1,0 +1,20 @@
+{
+  "name": "travel-3d",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Itinerários de viagem em 3D estilo gameplay (Three.js) — 5-Seen-Wanderung, Zermatt",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "three": "^0.165.0"
+  },
+  "devDependencies": {
+    "vite": "^5.3.1"
+  }
+}
